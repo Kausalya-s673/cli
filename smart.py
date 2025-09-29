@@ -1,446 +1,336 @@
 #!/usr/bin/env python3
-"""
-DevGuardian - Optimized CLI tool for developer guidance with DeepSeek AI
-FIXED VERSION - Resolves AI response issues
-"""
-
 import os
 import sys
 import json
 import re
+import importlib.util
+import tempfile
 import subprocess
-import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-import argparse
-import requests
-import openai
-import asyncio
-
-class Colors:
-    RESET = '\033[0m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-
-
-def print_colored(msg, color=Colors.RESET): 
-    print(f"{color}{msg}{Colors.RESET}")
-
-def print_success(msg): 
-    print_colored(f"✅ {msg}", Colors.GREEN)
-
-def print_warning(msg): 
-    print_colored(f"⚠️  {msg}", Colors.YELLOW)
-
-def print_error(msg): 
-    print_colored(f"❌ {msg}", Colors.RED)
-
-def print_info(msg): 
-    print_colored(f"ℹ️  {msg}", Colors.CYAN)
-
-
-class OpenAIClient:
-    def __init__(self):
-        self.api_key = "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"
-        if self.api_key:
-            print("✅ OpenAI API key loaded successfully")
-            self.client = openai.OpenAI(api_key=self.api_key)
-        else:
-            print("⚠️ No OpenAI API key found. AI features disabled.")
-            self.client = None
-
-    def ask_ai(self, prompt: str, sys_prompt="You are a helpful developer assistant.", max_tokens=400) -> str:
-        if not self.client:
-            return """🔑 OpenAI API key not configured!
-
-To enable AI features:
-1. Get your OpenAI API key from: https://platform.openai.com/account/api-keys
-2. Set your environment variable: export OPENAI_API_KEY=your_actual_key_here
-3. Or add it to your .env file: OPENAI_API_KEY=your_actual_key_here
-"""
-        try:
-            response =  self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=max_tokens,
-                temperature=0.2
-            )
-            return response.choices[0].message.content.strip() if response.choices else ""
-        except Exception as e:
-            return f"❌ AI request failed: {str(e)}"
-
-
-# Example usage
-async def main():
-    client = OpenAIClient()
-    answer =  client.ask_ai("Explain the async/await concept in Python in simple terms.")
-    print(answer)
-
-# Run it
-asyncio.run(main())
-
-class DocumentChecker:
-    def __init__(self, path):
-        self.path = Path(path)
-
-    def check_readme(self) -> Dict:
-        patterns = ['README.md', 'README.rst', 'README.txt', 'readme.md']
-        for p in patterns:
-            readme = self.path / p
-            if readme.exists():
-                try:
-                    content = readme.read_text(encoding='utf-8', errors='ignore')
-                    words = len(content.split())
-                    sections = re.findall(r'^#+\s+(.+)$', content, re.MULTILINE)
-                    expected = ['installation', 'usage', 'license']
-                    missing = [s for s in expected if not any(s.lower() in sec.lower() for sec in sections)]
-                    score = min(100, (20 if True else 0) + (20 if words >= 200 else 10 if words >= 100 else 0) + 
-                              (40 * (len(expected) - len(missing)) // len(expected)) + (20 if '[![' in content else 0))
-                    return {'exists': True, 'file': p, 'score': score, 'missing': missing, 'words': words}
-                except:
-                    pass
-        return {'exists': False, 'file': None, 'score': 0, 'missing': ['installation', 'usage', 'license'], 'words': 0}
-
-    def check_license(self) -> Dict:
-        patterns = ['LICENSE', 'LICENSE.md', 'license', 'license.txt']
-        for p in patterns:
-            if (self.path / p).exists():
-                return {'exists': True, 'file': p}
-        return {'exists': False, 'file': None}
-
-
-class TodoTracker:
-    def __init__(self, path):
-        self.path = Path(path)
-        self.patterns = {
-            'BUG': [r'#\s*BUG:?\s*(.+)', r'//\s*BUG:?\s*(.+)'],
-            'FIXME': [r'#\s*FIXME:?\s*(.+)', r'//\s*FIXME:?\s*(.+)'],
-            'TODO': [r'#\s*TODO:?\s*(.+)', r'//\s*TODO:?\s*(.+)'],
-            'HACK': [r'#\s*HACK:?\s*(.+)', r'//\s*HACK:?\s*(.+)']
-        }
-        self.extensions = ['.py', '.js', '.ts', '.java', '.go', '.rs', '.c', '.cpp', '.php', '.rb']
-
-    def find_todos(self) -> List[Dict]:
-        todos = []
-        for ext in self.extensions:
-            for file_path in list(self.path.rglob(f'*{ext}'))[:50]:
-                if any(ex in str(file_path) for ex in ['.git', 'node_modules', '__pycache__']):
-                    continue
-                try:
-                    lines = file_path.read_text(encoding='utf-8', errors='ignore').split('\n')
-                    for line_num, line in enumerate(lines, 1):
-                        for todo_type, patterns in self.patterns.items():
-                            for pattern in patterns:
-                                for match in re.finditer(pattern, line, re.IGNORECASE):
-                                    text = match.group(1).strip() if match.groups() else match.group(0).strip()
-                                    if text:
-                                        todos.append({'type': todo_type, 'text': text, 'file': str(file_path), 
-                                                    'line': line_num, 'priority': {'BUG': 1, 'FIXME': 2, 'TODO': 3, 'HACK': 4}[todo_type]})
-                except:
-                    continue
-        return sorted(todos, key=lambda x: (x['priority'], x['file']))
-
-    def get_summary(self, todos) -> Dict:
-        by_type = {}
-        for todo in todos:
-            by_type[todo['type']] = by_type.get(todo['type'], 0) + 1
-        return {'total': len(todos), 'by_type': by_type, 'files': len(set(t['file'] for t in todos))}
-
-
-class DependencyChecker:
-    def __init__(self, path):
-        self.path = Path(path)
-
-    def detect_languages(self) -> List[str]:
-        langs = []
-        patterns = {
-            'python': ['requirements.txt', 'setup.py', 'pyproject.toml'],
-            'nodejs': ['package.json'],
-            'go': ['go.mod'],
-            'java': ['pom.xml', 'build.gradle'],
-            'rust': ['Cargo.toml']
-        }
-        for lang, files in patterns.items():
-            if any((self.path / f).exists() for f in files):
-                langs.append(lang)
-        return langs if langs else ['unknown']
-
-    def check_python(self) -> Dict:
-        req_file = self.path / 'requirements.txt'
-        if req_file.exists():
-            try:
-                deps = [line.strip().split('==')[0].split('>=')[0].split('<=')[0] 
-                       for line in req_file.read_text().split('\n') 
-                       if line.strip() and not line.startswith('#')]
-                return {'total': len(deps), 'deps': deps[:10], 'file': 'requirements.txt'}
-            except:
-                pass
-        return {'total': 0, 'deps': [], 'file': None}
-
-    def check_nodejs(self) -> Dict:
-        pkg_file = self.path / 'package.json'
-        if pkg_file.exists():
-            try:
-                data = json.loads(pkg_file.read_text())
-                deps = list(data.get('dependencies', {}).keys()) + list(data.get('devDependencies', {}).keys())
-                return {'total': len(deps), 'deps': deps[:10], 'file': 'package.json'}
-            except:
-                pass
-        return {'total': 0, 'deps': [], 'file': None}
-
-class SecurityScanner:
-    def __init__(self, path):
-        self.path = Path(path)
-
-    def scan(self) -> Dict:
-        issues = []
-        sensitive_files = ['.env', '.env.local', 'id_rsa', 'id_dsa', 'config.json', 'secrets.json']
-
-        for pattern in sensitive_files:
-            for match in self.path.rglob(pattern):
-                if '.git' not in str(match):
-                    issues.append(f"Sensitive file: {match.name}")
-
-        code_files = []
-        for ext in ['.py', '.js', '.ts', '.java', '.yaml', '.yml']:
-            code_files.extend(list(self.path.rglob(f'*{ext}'))[:20])
-
-        secret_patterns = [
-            (r"password\s*[=:]\s*['\"](.{8,})['\"]", 'password'),
-            (r"api[_-]?key\s*[=:]\s*['\"](.{16,})['\"]", 'API key'),
-            (r"secret[_-]?key\s*[=:]\s*['\"](.{16,})['\"]", 'secret')
-        ]
-#To-Do
-
-        for file_path in code_files:
-            if any(ex in str(file_path) for ex in ['.git', 'node_modules']):
-                continue
-            try:
-                content = file_path.read_text(encoding='utf-8', errors='ignore')
-                for pattern, desc in secret_patterns:
-                    for match in re.finditer(pattern, content, re.IGNORECASE):
-                        value = match.group(1) if match.groups() else match.group(0)
-                        if value.lower() not in ['password', 'your_api_key', 'example', 'test']:
-                            issues.append(f"Potential {desc} in {file_path.name}")
-            except:
-                continue
-
-        score = max(0, 100 - len(issues) * 15)
-        return {'score': score, 'issues': issues[:5]}
-
-
-class DevGuardianScanner:
-    def __init__(self, path="."):
-        self.path = Path(path).resolve()
-        self.doc_checker = DocumentChecker(self.path)
-        self.todo_tracker = TodoTracker(self.path)
-        self.dep_checker = DependencyChecker(self.path)
-        self.security_scanner = SecurityScanner(self.path)
-        self.ai = DeepSeekAI()
-
-    def build_context(self) -> str:
-        context = f"Project: {self.path.name}\n"
-        readme = self.doc_checker.check_readme()
-        if readme['exists']:
-            try:
-                readme_content = (self.path / readme['file']).read_text(encoding='utf-8', errors='ignore')
-                context += f"README content:\n{readme_content[:1000]}...\n"
-            except:
-                pass
-
-        langs = self.dep_checker.detect_languages()
-        context += f"Languages: {', '.join(langs)}\n"
-
-        if 'python' in langs:
-            py_deps = self.dep_checker.check_python()
-            context += f"Python dependencies: {', '.join(py_deps['deps'][:5])}\n"
-
-        if 'nodejs' in langs:
-            js_deps = self.dep_checker.check_nodejs()
-            context += f"Node.js dependencies: {', '.join(js_deps['deps'][:5])}\n"
-
-        return context
-
-    def scan(self) -> Dict:
-        start_time = time.time()
-        print_info(f"🔍 Scanning project: {self.path.name}")
-
-        readme = self.doc_checker.check_readme()
-        license_info = self.doc_checker.check_license()
-        todos = self.todo_tracker.find_todos()
-        todo_summary = self.todo_tracker.get_summary(todos)
-        languages = self.dep_checker.detect_languages()
-        security = self.security_scanner.scan()
-
-        health_score = min(100, (readme['score'] * 0.4) + (20 if license_info['exists'] else 0) + 
-                          max(0, 40 - min(todo_summary['total'] * 2, 40)))
-
-        grade = ("A" if health_score >= 90 else "B" if health_score >= 80 else 
-                "C" if health_score >= 70 else "D" if health_score >= 60 else "F")
-
-        badges = []
-        if readme['exists'] and readme['score'] >= 80: badges.append("📚 Documentation Master")
-        if todo_summary['total'] == 0: badges.append("✨ Clean Code Champion")
-        if security['score'] >= 95: badges.append("🔐 Security Champion")
-        if health_score >= 90: badges.append("🏆 Project Excellence")
-
-        return {
-            'project': self.path.name,
-            'languages': languages,
-            'scan_time': round(time.time() - start_time, 2),
-            'health_score': {'score': round(health_score, 1), 'grade': grade},
-            'badges': badges,
-            'readme': readme,
-            'license': license_info,
-            'todos': {'items': todos[:10], 'summary': todo_summary},
-            'security': security,
-            'dependencies': {
-                'python': self.dep_checker.check_python() if 'python' in languages else None,
-                'nodejs': self.dep_checker.check_nodejs() if 'nodejs' in languages else None
-            }
-        }
-
-    def display_results(self, results):
-        print("\n" + "=" * 60)
-        print_colored("📊 DEVGUARDIAN SCAN RESULTS", Colors.BLUE)
-        print(f"Project: {results['project']}")
-        print(f"Languages: {', '.join(results['languages'])}")
-        print(f"Scan Time: {results['scan_time']}s")
-        print("=" * 60)
-
-        health = results['health_score']
-        color = Colors.GREEN if health['grade'] in ['A', 'B'] else Colors.YELLOW if health['grade'] == 'C' else Colors.RED
-        print_colored(f"\n🎯 Health Score: {health['score']}% (Grade: {health['grade']})", color)
-
-        if results['badges']:
-            print_colored(f"\n🏆 Badges:", Colors.YELLOW)
-            for badge in results['badges']:
-                print(f"  🎖️  {badge}")
-
-        print_colored(f"\n📋 DOCUMENTATION", Colors.BLUE)
-        readme = results['readme']
-        if readme['exists']:
-            print_success(f"README: {readme['file']} (Score: {readme['score']}/100)")
-            if readme['missing']: print_warning(f"Missing: {', '.join(readme['missing'])}")
-        else:
-            print_error("No README found")
-
-        if results['license']['exists']:
-            print_success(f"License: {results['license']['file']}")
-        else:
-            print_warning("No LICENSE found")
-
-        print_colored(f"\n📝 TODO ANALYSIS", Colors.BLUE)
-        todo_sum = results['todos']['summary']
-        if todo_sum['total'] == 0:
-            print_success("No TODOs found!")
-        else:
-            print(f"Total: {todo_sum['total']}")
-            for t_type, count in todo_sum['by_type'].items():
-                emoji = {'BUG': '🐛', 'FIXME': '🔧', 'TODO': '📝', 'HACK': '⚡'}[t_type]
-                print(f"  {emoji} {t_type}: {count}")
-
-        print_colored(f"\n🔒 SECURITY", Colors.BLUE)
-        sec = results['security']
-        color = Colors.GREEN if sec['score'] >= 90 else Colors.YELLOW if sec['score'] >= 70 else Colors.RED
-        print_colored(f"Score: {sec['score']}/100", color)
-        if sec['issues']:
-            for issue in sec['issues']:
-                print_warning(issue)
-
-        deps = results['dependencies']
-        if deps.get('python') and deps['python']['total'] > 0:
-            print_colored(f"\n📦 PYTHON DEPENDENCIES", Colors.BLUE)
-            print(f"Total: {deps['python']['total']}")
-
-        if deps.get('nodejs') and deps['nodejs']['total'] > 0:
-            print_colored(f"\n📦 NODE.JS DEPENDENCIES", Colors.BLUE)
-            print(f"Total: {deps['nodejs']['total']}")
-
-        print("\n" + "=" * 60)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="🛡️ DevGuardian - Developer guidance with DeepSeek AI")
-    subparsers = parser.add_subparsers(dest='command', help='Commands')
-
-    scan_parser = subparsers.add_parser('scan', help='Scan project')
-    scan_parser.add_argument('--path', '-p', default='.', help='Project path')
-    scan_parser.add_argument('--json', action='store_true', help='JSON output')
-
-    todo_parser = subparsers.add_parser('todos', help='Find TODOs')
-    todo_parser.add_argument('--path', '-p', default='.', help='Project path')
-
-    ai_parser = subparsers.add_parser('ai', help='Ask AI')
-    ai_parser.add_argument('question', help='Question')
-    ai_parser.add_argument('--path', '-p', default='.', help='Project path')
-
-    shell_parser = subparsers.add_parser('shell', help='AI shell')
-    shell_parser.add_argument('--path', '-p', default='.', help='Project path')
-
-    parser.add_argument('--version', action='version', version='DevGuardian 2.0')
-
-    args = parser.parse_args()
-    if not args.command:
-        parser.print_help()
+from rich import print
+from rich.prompt import Prompt
+
+# ----------------------------
+# Load or create .env for OpenAI API key
+# ----------------------------
+ENV_PATH = Path(".env")
+if not ENV_PATH.exists():
+    ENV_PATH.write_text("OPENAI_API_KEY=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\n")
+    print("[yellow]⚠️ .env file created. Add your OpenAI API key and restart.[/yellow]")
+    sys.exit(1)
+
+from dotenv import load_dotenv
+load_dotenv()
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+
+# Optional: AI integration
+try:
+    import openai
+    if OPENAI_KEY and OPENAI_KEY != "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":
+        openai.api_key = OPENAI_KEY
+    else:
+        print("[yellow]⚠️ OpenAI API key not set. AI features disabled.[/yellow]")
+        OPENAI_KEY = None
+except ImportError:
+    print("[yellow]⚠️ OpenAI library not found. AI features disabled.[/yellow]")
+    OPENAI_KEY = None
+
+# ----------------------------
+# Globals
+# ----------------------------
+last_file = None
+last_language = None
+last_output = None
+last_error = None
+
+# ----------------------------
+# Language Detection
+# ----------------------------
+def detect_language_from_file(file_path):
+    ext = file_path.suffix.lower()
+    if ext == ".py": return "python"
+    elif ext == ".js": return "nodejs"
+    elif ext == ".java": return "java"
+    else: return "unknown"
+
+# ----------------------------
+# Dependency Detection
+# ----------------------------
+def detect_python_dependencies(code):
+    deps = set()
+    for line in code.splitlines():
+        line = line.strip()
+        if line.startswith("import "):
+            deps.add(line.split()[1].split('.')[0])
+        elif line.startswith("from "):
+            deps.add(line.split()[1].split('.')[0])
+    return list(deps)
+
+def detect_node_dependencies(code):
+    return list(set(re.findall(r'require\([\'"](\w+)[\'"]\)', code)))
+
+# ----------------------------
+# Folder Dependency Checks
+# ----------------------------
+def check_python_requirements(folder):
+    req_file = Path(folder) / "requirements.txt"
+    missing = []
+    if req_file.exists():
+        with open(req_file) as f:
+            packages = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        for pkg in packages:
+            if importlib.util.find_spec(pkg) is None:
+                missing.append(pkg)
+    return missing
+
+def check_node_requirements(folder):
+    pkg_file = Path(folder) / "package.json"
+    missing = []
+    if pkg_file.exists():
+        with open(pkg_file) as f:
+            data = json.load(f)
+            dependencies = data.get("dependencies", {})
+            for pkg in dependencies:
+                if not (Path(folder) / "node_modules" / pkg).exists():
+                    missing.append(pkg)
+    return missing
+
+# ----------------------------
+# Run Project Folder
+# ----------------------------
+def run_folder_code(folder):
+    print("[blue]Running project folder...[/blue]")
+    main_py = Path(folder) / "main.py"
+    if main_py.exists():
+        subprocess.run([sys.executable, str(main_py)])
         return
 
-    scanner = DevGuardianScanner(args.path)
+    pkg_file = Path(folder) / "package.json"
+    if pkg_file.exists():
+        with open(pkg_file) as f:
+            data = json.load(f)
+            main_js = data.get("main", "index.js")
+            main_path = Path(folder) / main_js
+            if main_path.exists():
+                subprocess.run(["node", str(main_path)])
+                return
+            elif (Path(folder) / "index.js").exists():
+                subprocess.run(["node", str(Path(folder) / "index.js")])
+                return
 
+    print("[yellow]⚠️ Could not detect entry point. Please run manually.[/yellow]")
+
+# ----------------------------
+# Folder Setup & Auto-Run
+# ----------------------------
+def setup_folder(folder):
+    python_missing = check_python_requirements(folder)
+    node_missing = check_node_requirements(folder)
+
+    if not python_missing and not node_missing:
+        print("[green]✅ All dependencies installed! Code should run.[/green]")
+        run_folder_code(folder)
+        return True
+
+    print("[yellow]⚠️ Missing dependencies detected:[/yellow]")
+    for pkg in python_missing:
+        print(f"- [blue]{pkg}[/blue] (Python)")
+    for pkg in node_missing:
+        print(f"- [blue]{pkg}[/blue] (Node.js)")
+
+    choice = Prompt.ask("Install missing dependencies now? (y/n)", choices=["y","n"])
+    if choice == "y":
+        if python_missing:
+            print("[blue]Installing missing Python packages...[/blue]")
+            for pkg in python_missing:
+                subprocess.run([sys.executable, "-m", "pip", "install", pkg], check=True)
+            print("[green]✅ Python dependencies installed.[/green]")
+        if node_missing:
+            print("[blue]Installing missing Node.js packages...[/blue]")
+            subprocess.run(["npm", "install"], cwd=folder, check=True)
+            print("[green]✅ Node.js dependencies installed.[/green]")
+        print("[green]✅ Folder setup completed.[/green]")
+        run_folder_code(folder)
+        return True
+    else:
+        print("[red]Execution blocked until dependencies are installed.[/red]")
+        return False
+
+# ----------------------------
+# File Setup
+# ----------------------------
+def setup_python_file(file_path):
+    code = file_path.read_text()
+    deps = detect_python_dependencies(code)
+    missing = [pkg for pkg in deps if importlib.util.find_spec(pkg) is None]
+    if not missing:
+        print("[green]✅ All Python dependencies are installed.[/green]")
+        return
+    print(f"[yellow]⚠️ Missing Python dependencies: {missing}[/yellow]")
+    choice = Prompt.ask("Install missing packages now? (y/n)", choices=["y","n"])
+    if choice == "y":
+        for pkg in missing:
+            subprocess.run([sys.executable, "-m", "pip", "install", pkg], check=True)
+        print("[green]✅ Python setup completed.[/green]")
+
+def setup_node_file(file_path):
+    code = file_path.read_text()
+    deps = detect_node_dependencies(code)
+    if not deps:
+        print("[green]✅ No Node.js dependencies detected.[/green]")
+        return
+    print(f"[yellow]⚠️ Missing Node.js dependencies: {deps}[/yellow]")
+    choice = Prompt.ask("Install missing packages now? (y/n)", choices=["y","n"])
+    if choice == "y":
+        temp_dir = tempfile.mkdtemp()
+        print(f"[blue]Creating temporary Node.js project in {temp_dir}[/blue]")
+        subprocess.run(["npm", "init", "-y"], cwd=temp_dir, check=True)
+        for pkg in deps:
+            subprocess.run(["npm", "install", pkg], cwd=temp_dir, check=True)
+        print("[green]✅ Node.js setup completed (temporary environment).[/green]")
+
+def run_setup_file(file_path, language):
+    if language == "python":
+        setup_python_file(file_path)
+    elif language == "nodejs":
+        setup_node_file(file_path)
+    else:
+        print("[yellow]⚠️ Setup for this language requires Docker.[/yellow]")
+
+# ----------------------------
+# File Execution
+# ----------------------------
+def run_file(file_path, language):
+    global last_output, last_error
+    print("[blue]Running file...[/blue]")
     try:
-        if args.command == 'scan':
-            results = scanner.scan()
-            if args.json:
-                print(json.dumps(results, indent=2, default=str))
-            else:
-                scanner.display_results(results)
-            sys.exit(0 if results['health_score']['score'] >= 80 else 1 if results['health_score']['score'] >= 60 else 2)
-
-        elif args.command == 'todos':
-            todos = scanner.todo_tracker.find_todos()
-            summary = scanner.todo_tracker.get_summary(todos)
-            print_colored("📝 TODO Analysis", Colors.BLUE)
-            print(f"Total: {summary['total']}, Files: {summary['files']}")
-            for t_type, count in summary['by_type'].items():
-                emoji = {'BUG': '🐛', 'FIXME': '🔧', 'TODO': '📝', 'HACK': '⚡'}[t_type]
-                print(f"{emoji} {t_type}: {count}")
-            for todo in todos[:5]:
-                print(f"  {todo['type']} in {Path(todo['file']).name}:{todo['line']} - {todo['text'][:50]}...")
-
-        elif args.command == 'ai':
-            context = scanner.build_context()
-            answer = scanner.ai.ask_question(args.question, context)
-            print_colored("🤖 AI Assistant:", Colors.GREEN)
-            print(answer)
-
-        elif args.command == 'shell':
-            print_colored("🤖 DevGuardian AI Shell (DeepSeek)", Colors.GREEN)
-            print("Ask questions about your project. Type 'exit' to quit.\n")
-            context = scanner.build_context()
-
-            while True:
-                try:
-                    question = input(f"{Colors.BLUE}❓ You: {Colors.RESET}")
-                    if question.lower() in ['exit', 'quit', 'bye']:
-                        print("👋 Goodbye!")
-                        break
-
-                    answer = scanner.ai.ask_question(question, context)
-                    print_colored(f"🤖 AI: {answer}\n", Colors.GREEN)
-                except (KeyboardInterrupt, EOFError):
-                    print("\n👋 Goodbye!")
-                    break
-
+        if language == "python":
+            result = subprocess.run([sys.executable, str(file_path)], capture_output=True, text=True)
+        elif language == "nodejs":
+            result = subprocess.run(["node", str(file_path)], capture_output=True, text=True)
+        else:
+            print("[yellow]⚠️ Execution requires Docker or manual run.[/yellow]")
+            return
+        last_output = result.stdout
+        last_error = result.stderr
+        print_output(result.stdout, result.stderr)
     except Exception as e:
-        print_error(f"Error: {str(e)}")
-        sys.exit(2)
+        print(f"[red]Execution failed: {e}[/red]")
 
+def print_output(stdout, stderr):
+    print("---------- [green]Output[/green] ----------")
+    print(stdout if stdout else "(No output)")
+    print("---------- [red]Errors[/red] ----------")
+    print(stderr if stderr else "(No errors)")
+    print("----------------------------------------")
 
+# ----------------------------
+# AI-Powered Fix
+# ----------------------------
+def ai_fix_file(file_path, language, error_text):
+    if not OPENAI_KEY:
+        print("[yellow]⚠️ OpenAI API key not set. AI fix disabled.[/yellow]")
+        return
+    code = file_path.read_text()
+    prompt = f"""
+You are an AI assistant. I have the following {language} file:
+
+{code}
+
+It produced the following error:
+
+{error_text}
+
+Suggest fixes, missing imports, or dependency installations needed to fix this error.
+Provide a concise explanation.
+"""
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        suggestion = response['choices'][0]['message']['content']
+        print(f"[cyan]AI Suggestion:[/cyan]\n{suggestion}")
+    except Exception as e:
+        print(f"[red]AI request failed: {e}[/red]")
+
+# ----------------------------
+# CLI Loop
+# ----------------------------
+def cli_loop():
+    global last_file, last_language, last_error
+    print("[cyan]Welcome to Smart File Execution CLI with AI! Type /help for commands.[/cyan]")
+
+    while True:
+        command = Prompt.ask(">")
+
+        if command.startswith("/exit"):
+            print("[cyan]Goodbye! 👋[/cyan]")
+            break
+
+        elif command.startswith("/help"):
+            print("""
+Available commands:
+/file <path>       - Load a code file
+/run               - Execute loaded file
+/setup             - Check/install dependencies for file
+/fix               - AI-powered suggestions for errors
+/setup_folder <folder_path> - Check/install folder dependencies & auto-run
+/exit              - Quit CLI
+/help              - Show this help
+            """)
+
+        elif command.startswith("/file"):
+            parts = command.split(maxsplit=1)
+            if len(parts) < 2:
+                print("[red]Please provide a file path.[/red]")
+                continue
+            file_path = Path(parts[1])
+            if not file_path.exists():
+                print(f"[red]File not found: {file_path}[/red]")
+                continue
+            last_file = file_path
+            last_language = detect_language_from_file(file_path)
+            print(f"[green]File loaded: {file_path} (Detected language: {last_language})[/green]")
+
+        elif command.startswith("/setup"):
+            if not last_file:
+                print("[red]No file loaded. Use /file first.[/red]")
+                continue
+            run_setup_file(last_file, last_language)
+
+        elif command.startswith("/run"):
+            if not last_file:
+                print("[red]No file loaded. Use /file first.[/red]")
+                continue
+            run_file(last_file, last_language)
+
+        elif command.startswith("/fix"):
+            if not last_file:
+                print("[red]No file loaded. Use /file first.[/red]")
+                continue
+            if not last_error:
+                print("[yellow]No errors detected from last run.[/yellow]")
+                continue
+            ai_fix_file(last_file, last_language, last_error)
+
+        elif command.startswith("/setup_folder"):
+            parts = command.split(maxsplit=1)
+            if len(parts) < 2:
+                print("[red]Please provide a folder path.[/red]")
+                continue
+            folder = parts[1]
+            if not Path(folder).exists():
+                print(f"[red]Folder not found: {folder}[/red]")
+                continue
+            setup_folder(folder)
+
+        else:
+            print("[red]Unknown command. Type /help to see commands.[/red]")
+
+# ----------------------------
+# Entry Point
+# ----------------------------
 if __name__ == "__main__":
-    main()
+    cli_loop()
