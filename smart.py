@@ -44,7 +44,7 @@ def print_info(msg):
 
 class OpenAIClient:
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = "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"
         if self.api_key:
             print("✅ OpenAI API key loaded successfully")
             self.client = openai.OpenAI(api_key=self.api_key)
@@ -52,7 +52,7 @@ class OpenAIClient:
             print("⚠️ No OpenAI API key found. AI features disabled.")
             self.client = None
 
-    async def ask_ai(self, prompt: str, sys_prompt="You are a helpful developer assistant.", max_tokens=400) -> str:
+    def ask_ai(self, prompt: str, sys_prompt="You are a helpful developer assistant.", max_tokens=400) -> str:
         if not self.client:
             return """🔑 OpenAI API key not configured!
 
@@ -62,7 +62,7 @@ To enable AI features:
 3. Or add it to your .env file: OPENAI_API_KEY=your_actual_key_here
 """
         try:
-            response = await self.client.chat.completions.create(
+            response =  self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": sys_prompt},
@@ -79,7 +79,7 @@ To enable AI features:
 # Example usage
 async def main():
     client = OpenAIClient()
-    answer = await client.ask_ai("Explain the async/await concept in Python in simple terms.")
+    answer =  client.ask_ai("Explain the async/await concept in Python in simple terms.")
     print(answer)
 
 # Run it
