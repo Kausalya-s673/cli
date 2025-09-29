@@ -10,29 +10,20 @@ from pathlib import Path
 from rich import print
 from rich.prompt import Prompt
 
-# ----------------------------
-# Load or create .env for OpenAI API key
-# ----------------------------
-ENV_PATH = Path(".env")
-if not ENV_PATH.exists():
-    ENV_PATH.write_text("OPENAI_API_KEY=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\n")
-    print("[yellow]⚠️ .env file created. Add your OpenAI API key and restart.[/yellow]")
-    sys.exit(1)
+# Define OPENAI_KEY (and optionally OPENAI_API_KEY) here
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY", None)
+OPENAI_API_KEY = OPENAI_KEY  # For compatibility if needed
 
-from dotenv import load_dotenv
-load_dotenv()
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-
-# Optional: AI integration
 try:
     import openai
-    if OPENAI_KEY and OPENAI_KEY != "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":
-        openai.api_key = OPENAI_KEY
-    else:
-        print("[yellow]⚠️ OpenAI API key not set. AI features disabled.[/yellow]")
-        OPENAI_KEY = None
 except ImportError:
-    print("[yellow]⚠️ OpenAI library not found. AI features disabled.[/yellow]")
+    openai = None
+
+if OPENAI_KEY and OPENAI_KEY != "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":
+    if openai:
+        openai.api_key = OPENAI_KEY
+else:
+    print("[yellow]⚠️ OpenAI API key not set. AI features disabled.[/yellow]")
     OPENAI_KEY = None
 
 # ----------------------------
